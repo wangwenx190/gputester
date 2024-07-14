@@ -1,5 +1,5 @@
-## GPU Tester Tool
-A tiny GPU tester tool for Windows.
+## GPU Test Tool
+A tiny GPU test tool for Windows.
 
 ## Screenshots
 
