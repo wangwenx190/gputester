@@ -45,8 +45,9 @@ struct LibraryDeleter final {
 };
 using ScopedLibrary = std::unique_ptr<std::remove_pointer_t<HMODULE>, LibraryDeleter>;
 
-#define LOAD_DLL(DLL, VAR) const auto VAR = ScopedLibrary{ ::LoadLibraryExW(L## #DLL, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) }
-#define LOAD_SYM(DLL, SYM, VAR) const auto VAR = reinterpret_cast<decltype(&::SYM)>(::GetProcAddress(DLL, #SYM))
+#define LOAD_DLL(DLL, VAR) VAR = ScopedLibrary{ ::LoadLibraryExW(L## #DLL, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+#define DECL_API(SYM, VAR) decltype(&::SYM) p##SYM{ nullptr }
+#define LOAD_API(DLL, SYM) p##SYM = reinterpret_cast<decltype(&::SYM)>(::GetProcAddress(DLL, #SYM))
 
 static constexpr const float kDefaultSDRWhiteLevel{ 200.f };
 static constexpr const DXGI_FORMAT kDefaultPixelFormat{ DXGI_FORMAT_R8G8B8A8_UNORM };
@@ -130,19 +131,11 @@ static const std::unordered_map<Vendor, std::wstring_view> vendorNameMap = {
     { Vendor::PoCL,        L"PoCL" },
 };
 
-[[nodiscard]] static inline Vendor vendorIdToVendor(const std::uint64_t vendorId) {
-    const auto it = vendorIdMap.find(vendorId);
-    if (it != vendorIdMap.end()) {
-        return it->second;
-    }
-    return Vendor::Unknown;
-}
-
 [[nodiscard]] static inline std::wstring getWin32ErrorMessage(const DWORD dwError) {
     LPWSTR buf{ nullptr };
     ::FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                  nullptr, dwError, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                          reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
+                     nullptr, dwError, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                     reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
     std::wstring str{ buf };
     ::LocalFree(buf);
     return str;
@@ -156,31 +149,124 @@ static const std::unordered_map<Vendor, std::wstring_view> vendorNameMap = {
     return getWin32ErrorMessage(HRESULT_CODE(hr));
 }
 
+struct DLLBase {
+    DLLBase() = default;
+    ~DLLBase() = default;
+
+    [[nodiscard]] inline bool isAvailable() const {
+        return m_dll != nullptr;
+    }
+
+    [[nodiscard]] inline operator bool() const {
+        return isAvailable();
+    }
+
+    [[nodiscard]] inline HMODULE get() const {
+        return m_dll ? m_dll.get() : nullptr;
+    }
+
+private:
+    DLLBase(const DLLBase&) = delete;
+    DLLBase& operator=(const DLLBase&) = delete;
+
+protected:
+    ScopedLibrary m_dll{ nullptr };
+};
+#define DLLBASE_DECL_INSTANCE(Class) \
+    [[nodiscard]] static inline const Class& instance() { \
+        static const Class inst; \
+        return inst; \
+    }
+
+struct User32DLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(User32DLL)
+
+    // Windows 2000
+    DECL_API(GetMonitorInfoW);
+    // Windows Vista
+    DECL_API(GetDisplayConfigBufferSizes);
+    DECL_API(DisplayConfigGetDeviceInfo);
+    // Windows 7
+    DECL_API(QueryDisplayConfig);
+    // Windows 10, version 1703
+    DECL_API(SetProcessDpiAwarenessContext);
+
+private:
+    User32DLL() : DLLBase() {
+        LOAD_DLL(user32, m_dll);
+        if (m_dll) {
+            LOAD_API(m_dll.get(), GetMonitorInfoW);
+            if (!pGetMonitorInfoW) {
+                std::wcerr << L"Failed to resolve \"GetMonitorInfoW\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+            }
+            if (::IsWindowsVistaOrGreater()) {
+                LOAD_API(m_dll.get(), GetDisplayConfigBufferSizes);
+                if (!pGetDisplayConfigBufferSizes) {
+                    std::wcerr << L"Failed to resolve \"GetDisplayConfigBufferSizes\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+                }
+                LOAD_API(m_dll.get(), DisplayConfigGetDeviceInfo);
+                if (!pDisplayConfigGetDeviceInfo) {
+                    std::wcerr << L"Failed to resolve \"DisplayConfigGetDeviceInfo\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+                }
+                if (::IsWindows7OrGreater()) {
+                    LOAD_API(m_dll.get(), QueryDisplayConfig);
+                    if (!pQueryDisplayConfig) {
+                        std::wcerr << L"Failed to resolve \"QueryDisplayConfig\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+                    }
+                    if (::IsWindows10OrGreater()) {
+                        LOAD_API(m_dll.get(), SetProcessDpiAwarenessContext);
+                        if (!pSetProcessDpiAwarenessContext) {
+                            std::wcerr << L"Failed to resolve \"SetProcessDpiAwarenessContext\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+                        }
+                    }
+                }
+            }
+        } else {
+            std::wcerr << L"Failed to load \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+
+    ~User32DLL() = default;
+};
+#define USER32_AVAILABLE (User32DLL::instance().isAvailable())
+#define USER32_API(Name) (User32DLL::instance().p##Name)
+
+struct DXGIDLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(DXGIDLL)
+
+    DECL_API(CreateDXGIFactory1);
+
+private:
+    DXGIDLL() : DLLBase() {
+        LOAD_DLL(dxgi, m_dll);
+        if (m_dll) {
+            if (::IsWindows7OrGreater()) {
+                LOAD_API(m_dll.get(), CreateDXGIFactory1);
+                if (!pCreateDXGIFactory1) {
+                    std::wcerr << L"Failed to resolve \"CreateDXGIFactory1\" from \"dxgi.dll\": " << getLastWin32ErrorMessage() << std::endl;
+                }
+            }
+        } else {
+            std::wcerr << L"Failed to load \"dxgi.dll\": " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+
+    ~DXGIDLL() = default;
+};
+#define DXGI_AVAILABLE (DXGIDLL::instance().isAvailable())
+#define DXGI_API(Name) (DXGIDLL::instance().p##Name)
+
+[[nodiscard]] static inline Vendor vendorIdToVendor(const std::uint64_t vendorId) {
+    const auto it = vendorIdMap.find(vendorId);
+    if (it != vendorIdMap.end()) {
+        return it->second;
+    }
+    return Vendor::Unknown;
+}
+
 [[nodiscard]] static inline bool getSdrWhiteLevelInNit(const DXGI_OUTPUT_DESC1 &outputDesc, float& levelOut)
 {
-    static LOAD_DLL(user32, user32Dll);
-    if (!user32Dll) {
-        std::wcerr << L"Failed to load \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-        return false;
-    }
-    static LOAD_SYM(user32Dll.get(), GetDisplayConfigBufferSizes, pGetDisplayConfigBufferSizes);
-    if (!pGetDisplayConfigBufferSizes) {
-        std::wcerr << L"Failed to resolve \"GetDisplayConfigBufferSizes\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-        return false;
-    }
-    static LOAD_SYM(user32Dll.get(), QueryDisplayConfig, pQueryDisplayConfig);
-    if (!pQueryDisplayConfig) {
-        std::wcerr << L"Failed to resolve \"QueryDisplayConfig\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-        return false;
-    }
-    static LOAD_SYM(user32Dll.get(), DisplayConfigGetDeviceInfo, pDisplayConfigGetDeviceInfo);
-    if (!pDisplayConfigGetDeviceInfo) {
-        std::wcerr << L"Failed to resolve \"DisplayConfigGetDeviceInfo\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-        return false;
-    }
-    static LOAD_SYM(user32Dll.get(), GetMonitorInfoW, pGetMonitorInfoW);
-    if (!pGetMonitorInfoW) {
-        std::wcerr << L"Failed to resolve \"GetMonitorInfoW\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+    if (!USER32_API(GetMonitorInfoW) || !USER32_API(GetDisplayConfigBufferSizes) || !USER32_API(DisplayConfigGetDeviceInfo) || !USER32_API(QueryDisplayConfig)) {
         return false;
     }
     std::vector<DISPLAYCONFIG_PATH_INFO> pathInfos{};
@@ -188,10 +274,10 @@ static const std::unordered_map<Vendor, std::wstring_view> vendorNameMap = {
     std::uint32_t modeInfoCount{ 0 };
     LONG result{ ERROR_SUCCESS };
     do {
-        if (pGetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathInfoCount, &modeInfoCount) == ERROR_SUCCESS) {
+        if (USER32_API(GetDisplayConfigBufferSizes)(QDC_ONLY_ACTIVE_PATHS, &pathInfoCount, &modeInfoCount) == ERROR_SUCCESS) {
             pathInfos.resize(pathInfoCount);
             std::vector<DISPLAYCONFIG_MODE_INFO> modeInfos(modeInfoCount);
-            result = pQueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathInfoCount, pathInfos.data(), &modeInfoCount, modeInfos.data(), nullptr);
+            result = USER32_API(QueryDisplayConfig)(QDC_ONLY_ACTIVE_PATHS, &pathInfoCount, pathInfos.data(), &modeInfoCount, modeInfos.data(), nullptr);
         } else {
             std::wcerr << L"\"GetDisplayConfigBufferSizes\" failed: " << getLastWin32ErrorMessage() << std::endl;
             return false;
@@ -199,7 +285,7 @@ static const std::unordered_map<Vendor, std::wstring_view> vendorNameMap = {
     } while (result == ERROR_INSUFFICIENT_BUFFER);
     MONITORINFOEXW monitorInfo{};
     monitorInfo.cbSize = sizeof(monitorInfo);
-    if (!pGetMonitorInfoW(outputDesc.Monitor, &monitorInfo)) {
+    if (!USER32_API(GetMonitorInfoW)(outputDesc.Monitor, &monitorInfo)) {
         std::wcerr << L"\"GetMonitorInfoW\" failed: " << getLastWin32ErrorMessage() << std::endl;
         return false;
     }
@@ -209,16 +295,18 @@ static const std::unordered_map<Vendor, std::wstring_view> vendorNameMap = {
         deviceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
         deviceName.header.adapterId = info.sourceInfo.adapterId;
         deviceName.header.id = info.sourceInfo.id;
-        if (pDisplayConfigGetDeviceInfo(&deviceName.header) == ERROR_SUCCESS) {
+        if (USER32_API(DisplayConfigGetDeviceInfo)(&deviceName.header) == ERROR_SUCCESS) {
             if (std::wcscmp(monitorInfo.szDevice, deviceName.viewGdiDeviceName) == 0) {
                 DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel{};
                 whiteLevel.header.size = sizeof(whiteLevel);
                 whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
                 whiteLevel.header.adapterId = info.targetInfo.adapterId;
                 whiteLevel.header.id = info.targetInfo.id;
-                if (pDisplayConfigGetDeviceInfo(&whiteLevel.header) == ERROR_SUCCESS) {
-                    levelOut = static_cast<float>(whiteLevel.SDRWhiteLevel) / 1000.f * 80.f;
+                if (USER32_API(DisplayConfigGetDeviceInfo)(&whiteLevel.header) == ERROR_SUCCESS) {
+                    levelOut = static_cast<float>(whiteLevel.SDRWhiteLevel) / 1000.f * 80.f; // MSDN told me this formula ...
                     return true;
+                } else {
+                    std::wcerr << L"\"DisplayConfigGetDeviceInfo\" failed: " << getLastWin32ErrorMessage() << std::endl;
                 }
             }
         } else {
@@ -252,40 +340,41 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
         enableVTSequencesForConsole(STD_ERROR_HANDLE);
     }
     std::ios::sync_with_stdio(false);
-    {
-        LOAD_DLL(user32, user32Dll);
-        if (user32Dll) {
-            LOAD_SYM(user32Dll.get(), SetProcessDpiAwarenessContext, pSetProcessDpiAwarenessContext);
-            if (pSetProcessDpiAwarenessContext) {
-                if (!pSetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
-                    const DWORD dwError = ::GetLastError();
-                    if (dwError != ERROR_ACCESS_DENIED) { // Setting the DPI awareness level in the manifest file will cause this "Access Denied" error.
-                        std::wcerr << L"\"SetProcessDpiAwarenessContex\" failed: " << getWin32ErrorMessage(dwError) << std::endl;
-                        return EXIT_FAILURE;
-                    }
-                }
-            } else {
-                std::wcerr << L"Failed to resolve \"SetProcessDpiAwarenessContext\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-            }
-        } else {
-            std::wcerr << L"Failed to load \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-        }
-    }
-    LOAD_DLL(dxgi, dxgiDll);
-    if (!dxgiDll) {
-        std::wcerr << L"Failed to load \"dxgi.dll\": " << getLastWin32ErrorMessage() << std::endl;
+    if (!USER32_AVAILABLE) {
+        std::wcerr << kColorRed << L"We need an available \"user32.dll\" to be able to use this tool." << kColorDefault << std::endl;
         return EXIT_FAILURE;
     }
-    LOAD_SYM(dxgiDll.get(), CreateDXGIFactory1, pCreateDXGIFactory1);
-    if (!pCreateDXGIFactory1) {
-        std::wcerr << L"Failed to resolve \"CreateDXGIFactory1\" from \"dxgi.dll\": " << getLastWin32ErrorMessage() << std::endl;
+    if (!DXGI_AVAILABLE) {
+        std::wcerr << kColorRed << L"We need an available \"dxgi.dll\" to be able to use this tool." << kColorDefault << std::endl;
+        return EXIT_FAILURE;
+    }
+    if (USER32_API(SetProcessDpiAwarenessContext)) {
+        if (!USER32_API(SetProcessDpiAwarenessContext)(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+            const DWORD dwError = ::GetLastError();
+            if (dwError != ERROR_ACCESS_DENIED) { // Setting the DPI awareness level in the manifest file will cause this "Access Denied" error.
+                std::wcerr << L"\"SetProcessDpiAwarenessContex\" failed: " << getWin32ErrorMessage(dwError) << std::endl;
+                return EXIT_FAILURE;
+            }
+        }
+    }
+    if (!DXGI_API(CreateDXGIFactory1)) {
         return EXIT_FAILURE;
     }
     ComPtr<IDXGIFactory1> factory;
-    HRESULT hr = pCreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf()));
+    HRESULT hr = DXGI_API(CreateDXGIFactory1)(IID_PPV_ARGS(factory.GetAddressOf()));
     if (FAILED(hr)) {
         std::wcerr << L"\"CreateDXGIFactory1\" failed: " << getComErrorMessage(hr) << std::endl;
         return EXIT_FAILURE;
+    }
+    bool variableRefreshRateSupported{ false };
+    {
+        ComPtr<IDXGIFactory5> factory5;
+        hr = factory->QueryInterface(IID_PPV_ARGS(factory5.GetAddressOf()));
+        if (SUCCEEDED(hr)) {
+            BOOL allowTearing{ FALSE };
+            hr = factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing));
+            variableRefreshRateSupported = SUCCEEDED(hr) && allowTearing;
+        }
     }
     ComPtr<IDXGIAdapter1> adapter;
     for (std::uint32_t adapterIndex = 0; factory->EnumAdapters1(adapterIndex, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++adapterIndex) {
@@ -311,6 +400,7 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
         std::wcout << L"Dedicated system memory: " << adapterDesc1.DedicatedSystemMemory / 1048576 << L" MiB" << std::endl;
         std::wcout << L"Shared system memory: " << adapterDesc1.SharedSystemMemory / 1048576 << L" MiB" << std::endl;
         std::wcout << L"Software simulation (rendered by CPU): " << ((adapterDesc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? L"Yes" : L"No") << std::endl;
+        std::wcout << L"Variable refresh rate supported: " << (variableRefreshRateSupported ? L"Yes" : L"No") << std::endl;
         ComPtr<IDXGIOutput> output;
         for (std::uint32_t outputIndex = 0; adapter->EnumOutputs(outputIndex, output.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++outputIndex) {
             DXGI_OUTPUT_DESC outputDesc{};
@@ -365,6 +455,9 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                 }
             }
             {
+                // refresh rate
+            }
+            {
                 ComPtr<IDXGIOutput6> output6;
                 hr = output->QueryInterface(IID_PPV_ARGS(output6.GetAddressOf()));
                 if (SUCCEEDED(hr)) {
@@ -374,53 +467,53 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                         const auto colorSpace = [&outputDesc1]() {
                             switch (outputDesc1.ColorSpace) {
                                 case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
-                                    return L"DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709";
+                                    return L"[sRGB] RGB (0-255), gamma: 2.2, siting: image, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
-                                    return L"DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709";
+                                    return L"[scRGB] RGB (0-255), gamma: 1.0, siting: image, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709:
-                                    return L"DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709";
+                                    return L"[ITU-R] RGB (16-235), gamma: 2.2, siting: image, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P2020:
-                                    return L"DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P2020";
+                                    return L"RGB (16-235), gamma: 2.2, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_G22_NONE_P709_X601:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_FULL_G22_NONE_P709_X601";
+                                    return L"YCbCr (0-255), gamma: 2.2, siting: image, primaries: BT.709, transfer matrix: BT.601";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601";
+                                    return L"YCbCr (16-235), gamma: 2.2, siting: video, primaries: BT.601";
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601";
+                                    return L"YCbCr (0-255), gamma: 2.2, siting: video, primaries: BT.601";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709";
+                                    return L"YCbCr (16-235), gamma: 2.2, siting: video, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709";
+                                    return L"YCbCr (0-255), gamma: 2.2, siting: video, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020";
+                                    return L"YCbCr (16-235), gamma: 2.2, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020";
+                                    return L"YCbCr (0-255), gamma: 2.2, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
-                                    return L"DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020";
+                                    return L"RGB (0-255), gamma: 2084, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020";
+                                    return L"YCbCr (16-235), gamma: 2084, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020:
-                                    return L"DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020";
+                                    return L"RGB (16-235), gamma: 2084, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_TOPLEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_TOPLEFT_P2020";
+                                    return L"YCbCr (16-235), gamma: 2.2, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020";
+                                    return L"YCbCr (16-235), gamma: 2084, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
-                                    return L"DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020";
+                                    return L"RGB (0-255), gamma: 2.2, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020";
+                                    return L"YCbCr (16-235), gamma: HLG, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020";
+                                    return L"YCbCr (0-255), gamma: HLG, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P709:
-                                    return L"DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P709";
+                                    return L"RGB (16-235), gamma: 2.4, siting: image, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P2020:
-                                    return L"DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P2020";
+                                    return L"RGB (16-235), gamma: 2.4, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P709:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P709";
+                                    return L"YCbCr (16-235), gamma: 2.4, siting: video, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P2020";
+                                    return L"YCbCr (16-235), gamma: 2.4, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_TOPLEFT_P2020:
-                                    return L"DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_TOPLEFT_P2020";
+                                    return L"YCbCr (16-235), gamma: 2.4, siting: video, primaries: BT.2020";
                                 default:
                                     return L"Unknown";
                             }
