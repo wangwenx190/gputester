@@ -45,9 +45,15 @@ struct LibraryDeleter final {
 };
 using ScopedLibrary = std::unique_ptr<std::remove_pointer_t<HMODULE>, LibraryDeleter>;
 
-#define LOAD_DLL(DLL, VAR) VAR = ScopedLibrary{ ::LoadLibraryExW(L## #DLL, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) }
-#define DECL_API(SYM, VAR) decltype(&::SYM) p##SYM{ nullptr }
-#define LOAD_API(DLL, SYM) p##SYM = reinterpret_cast<decltype(&::SYM)>(::GetProcAddress(DLL, #SYM))
+#define LOAD_DLL(DLL, VAR) VAR = ScopedLibrary{ ::LoadLibraryExW(L## #DLL, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) };
+#define DECL_API(SYM, VAR) \
+    using PFN_##SYM = decltype(&::SYM); \
+    PFN_##SYM p##SYM{ nullptr };
+#define LOAD_API(DLL, SYM) \
+    p##SYM = reinterpret_cast<PFN_##SYM>(::GetProcAddress(DLL, #SYM)); \
+    if (!p##SYM) { \
+        std::wcerr << L"Failed to resolve \""## #SYM ##"\": " << getLastWin32ErrorMessage() << std::endl; \
+    }
 
 static constexpr const float kDefaultSDRWhiteLevel{ 200.f };
 static constexpr const DXGI_FORMAT kDefaultPixelFormat{ DXGI_FORMAT_R8G8B8A8_UNORM };
@@ -152,12 +158,14 @@ static const std::unordered_map<Vendor, std::wstring_view> vendorNameMap = {
 struct DLLBase {
     DLLBase() = default;
     ~DLLBase() = default;
+    DLLBase(const DLLBase&) = delete;
+    DLLBase& operator=(const DLLBase&) = delete;
 
     [[nodiscard]] inline bool isAvailable() const {
         return m_dll != nullptr;
     }
 
-    [[nodiscard]] inline operator bool() const {
+    [[nodiscard]] inline explicit operator bool() const {
         return isAvailable();
     }
 
@@ -165,9 +173,13 @@ struct DLLBase {
         return m_dll ? m_dll.get() : nullptr;
     }
 
-private:
-    DLLBase(const DLLBase&) = delete;
-    DLLBase& operator=(const DLLBase&) = delete;
+    [[nodiscard]] inline HMODULE operator*() const {
+        return get();
+    }
+
+    [[nodiscard]] inline HMODULE operator->() const {
+        return get();
+    }
 
 protected:
     ScopedLibrary m_dll{ nullptr };
@@ -182,42 +194,29 @@ struct User32DLL final : public DLLBase {
     DLLBASE_DECL_INSTANCE(User32DLL)
 
     // Windows 2000
-    DECL_API(GetMonitorInfoW);
+    DECL_API(GetMonitorInfoW)
+    DECL_API(EnumDisplaySettingsW)
     // Windows Vista
-    DECL_API(GetDisplayConfigBufferSizes);
-    DECL_API(DisplayConfigGetDeviceInfo);
+    DECL_API(GetDisplayConfigBufferSizes)
+    DECL_API(DisplayConfigGetDeviceInfo)
     // Windows 7
-    DECL_API(QueryDisplayConfig);
+    DECL_API(QueryDisplayConfig)
     // Windows 10, version 1703
-    DECL_API(SetProcessDpiAwarenessContext);
+    DECL_API(SetProcessDpiAwarenessContext)
 
 private:
     User32DLL() : DLLBase() {
-        LOAD_DLL(user32, m_dll);
+        LOAD_DLL(user32, m_dll)
         if (m_dll) {
-            LOAD_API(m_dll.get(), GetMonitorInfoW);
-            if (!pGetMonitorInfoW) {
-                std::wcerr << L"Failed to resolve \"GetMonitorInfoW\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-            }
+            LOAD_API(m_dll.get(), GetMonitorInfoW)
+            LOAD_API(m_dll.get(), EnumDisplaySettingsW)
             if (::IsWindowsVistaOrGreater()) {
-                LOAD_API(m_dll.get(), GetDisplayConfigBufferSizes);
-                if (!pGetDisplayConfigBufferSizes) {
-                    std::wcerr << L"Failed to resolve \"GetDisplayConfigBufferSizes\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-                }
-                LOAD_API(m_dll.get(), DisplayConfigGetDeviceInfo);
-                if (!pDisplayConfigGetDeviceInfo) {
-                    std::wcerr << L"Failed to resolve \"DisplayConfigGetDeviceInfo\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-                }
+                LOAD_API(m_dll.get(), GetDisplayConfigBufferSizes)
+                LOAD_API(m_dll.get(), DisplayConfigGetDeviceInfo)
                 if (::IsWindows7OrGreater()) {
-                    LOAD_API(m_dll.get(), QueryDisplayConfig);
-                    if (!pQueryDisplayConfig) {
-                        std::wcerr << L"Failed to resolve \"QueryDisplayConfig\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-                    }
+                    LOAD_API(m_dll.get(), QueryDisplayConfig)
                     if (::IsWindows10OrGreater()) {
-                        LOAD_API(m_dll.get(), SetProcessDpiAwarenessContext);
-                        if (!pSetProcessDpiAwarenessContext) {
-                            std::wcerr << L"Failed to resolve \"SetProcessDpiAwarenessContext\" from \"user32.dll\": " << getLastWin32ErrorMessage() << std::endl;
-                        }
+                        LOAD_API(m_dll.get(), SetProcessDpiAwarenessContext)
                     }
                 }
             }
@@ -234,17 +233,14 @@ private:
 struct DXGIDLL final : public DLLBase {
     DLLBASE_DECL_INSTANCE(DXGIDLL)
 
-    DECL_API(CreateDXGIFactory1);
+    DECL_API(CreateDXGIFactory1)
 
 private:
     DXGIDLL() : DLLBase() {
-        LOAD_DLL(dxgi, m_dll);
+        LOAD_DLL(dxgi, m_dll)
         if (m_dll) {
             if (::IsWindows7OrGreater()) {
-                LOAD_API(m_dll.get(), CreateDXGIFactory1);
-                if (!pCreateDXGIFactory1) {
-                    std::wcerr << L"Failed to resolve \"CreateDXGIFactory1\" from \"dxgi.dll\": " << getLastWin32ErrorMessage() << std::endl;
-                }
+                LOAD_API(m_dll.get(), CreateDXGIFactory1)
             }
         } else {
             std::wcerr << L"Failed to load \"dxgi.dll\": " << getLastWin32ErrorMessage() << std::endl;
@@ -399,8 +395,8 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
         std::wcout << L"Dedicated video memory: " << adapterDesc1.DedicatedVideoMemory / 1048576 << L" MiB" << std::endl;
         std::wcout << L"Dedicated system memory: " << adapterDesc1.DedicatedSystemMemory / 1048576 << L" MiB" << std::endl;
         std::wcout << L"Shared system memory: " << adapterDesc1.SharedSystemMemory / 1048576 << L" MiB" << std::endl;
-        std::wcout << L"Software simulation (rendered by CPU): " << ((adapterDesc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? L"Yes" : L"No") << std::endl;
         std::wcout << L"Variable refresh rate supported: " << (variableRefreshRateSupported ? L"Yes" : L"No") << std::endl;
+        std::wcout << L"Software simulation (rendered by CPU): " << ((adapterDesc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? L"Yes" : L"No") << std::endl;
         ComPtr<IDXGIOutput> output;
         for (std::uint32_t outputIndex = 0; adapter->EnumOutputs(outputIndex, output.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++outputIndex) {
             DXGI_OUTPUT_DESC outputDesc{};
@@ -409,8 +405,9 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                 std::wcerr << L"\"IDXGIOutput::GetDesc\" failed: " << getComErrorMessage(hr) << std::endl;
                 continue;
             }
-            const auto width = std::abs(outputDesc.DesktopCoordinates.right - outputDesc.DesktopCoordinates.left);
-            const auto height = std::abs(outputDesc.DesktopCoordinates.bottom - outputDesc.DesktopCoordinates.top);
+            const auto& desktopRect = outputDesc.DesktopCoordinates;
+            const auto width = std::abs(desktopRect.right - desktopRect.left);
+            const auto height = std::abs(desktopRect.bottom - desktopRect.top);
             const auto rotation = [&outputDesc]() {
                 switch (outputDesc.Rotation) {
                     case DXGI_MODE_ROTATION_UNSPECIFIED:
@@ -430,7 +427,7 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
             std::wcout << kColorRed << L"-------------------------------" << kColorDefault << std::endl;
             std::wcout << kColorYellow << L"Output #" << outputIndex + 1 << L':' << kColorDefault << std::endl;
             std::wcout << L"Device name: " << outputDesc.DeviceName << std::endl;
-            std::wcout << L"Desktop geometry: x: " << outputDesc.DesktopCoordinates.left << L", y: " << outputDesc.DesktopCoordinates.top << L", width: " << width << L", height: " << height << std::endl;
+            std::wcout << L"Desktop geometry: x: " << desktopRect.left << L", y: " << desktopRect.top << L", width: " << width << L", height: " << height << std::endl;
             std::wcout << L"Attached to desktop: " << (outputDesc.AttachedToDesktop ? L"Yes" : L"No") << std::endl;
             std::wcout << L"Rotation: " << rotation << L" degree" << std::endl;
             {
@@ -455,7 +452,13 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                 }
             }
             {
-                // refresh rate
+                DEVMODEW devMode{};
+                if (USER32_API(EnumDisplaySettingsW) && USER32_API(EnumDisplaySettingsW)(outputDesc.DeviceName, ENUM_CURRENT_SETTINGS, &devMode)) {
+                    const auto& refreshRate = devMode.dmDisplayFrequency;
+                    if (refreshRate > 1) {
+                        std::wcout << L"Current refresh rate: " << refreshRate << L" Hz" << std::endl;
+                    }
+                }
             }
             {
                 ComPtr<IDXGIOutput6> output6;
