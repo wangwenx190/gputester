@@ -26,26 +26,31 @@
 
 #include <windows.h>
 #include <versionhelpers.h>
+#include <shellscalingapi.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #include <io.h>
 #include <fcntl.h>
+#include <cassert>
 #include <iostream>
 #include <memory>
 #include <unordered_map>
 
 using namespace Microsoft::WRL;
 
-struct LibraryDeleter final {
+using path_info_t = std::vector<DISPLAYCONFIG_PATH_INFO>;
+using mode_info_t = std::vector<DISPLAYCONFIG_MODE_INFO>;
+
+struct library_deleter_t final {
     void operator()(const HMODULE dll) const {
         if (dll) {
             ::FreeLibrary(dll);
         }
     }
 };
-using ScopedLibrary = std::unique_ptr<std::remove_pointer_t<HMODULE>, LibraryDeleter>;
+using scoped_library_t = std::unique_ptr<std::remove_pointer_t<HMODULE>, library_deleter_t>;
 
-#define LOAD_DLL(DLL, VAR) VAR = ScopedLibrary{ ::LoadLibraryExW(L## #DLL, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) };
+#define LOAD_DLL(DLL, VAR) VAR = scoped_library_t{ ::LoadLibraryExW(L## #DLL, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) };
 #define DECL_API(SYM, VAR) \
     using PFN_##SYM = decltype(&::SYM); \
     PFN_##SYM p##SYM{ nullptr };
@@ -56,6 +61,7 @@ using ScopedLibrary = std::unique_ptr<std::remove_pointer_t<HMODULE>, LibraryDel
     }
 
 static constexpr const float kDefaultSDRWhiteLevel{ 200.f };
+static constexpr const float kDefaultRefreshRate{ 60.f };
 static constexpr const DXGI_FORMAT kDefaultPixelFormat{ DXGI_FORMAT_R8G8B8A8_UNORM };
 static constexpr const std::wstring_view kColorDefault{ L"\x1b[0m" };
 static constexpr const std::wstring_view kColorRed{ L"\x1b[1;31m" };
@@ -65,7 +71,7 @@ static constexpr const std::wstring_view kColorBlue{ L"\x1b[1;34m" };
 static constexpr const std::wstring_view kColorMagenta{ L"\x1b[1;35m" };
 static constexpr const std::wstring_view kColorCyan{ L"\x1b[1;36m" };
 
-enum class Vendor : std::int8_t {
+enum class vendor_t : std::int8_t {
     Unknown = -1,
     // PCI-SIG-registered vendors
     AMD,
@@ -91,50 +97,50 @@ enum class Vendor : std::int8_t {
 };
 
 // Based on //third_party/angle/src/gpu_info_util/SystemInfo.h
-static const std::unordered_map<std::uint64_t, Vendor> vendorIdMap = {
-    { 0x0,     Vendor::Unknown },
-    { 0x1002,  Vendor::AMD },
-    { 0x106B,  Vendor::Apple },
-    { 0x13B5,  Vendor::ARM },
-    { 0x1AE0,  Vendor::Google },
-    { 0x1010,  Vendor::ImgTec },
-    { 0x8086,  Vendor::Intel },
-    { 0x1414,  Vendor::Microsoft },
-    { 0x10DE,  Vendor::Nvidia },
-    { 0x5143,  Vendor::Qualcomm },
-    { 0x144D,  Vendor::Samsung },
-    { 0x14E4,  Vendor::Broadcom },
-    { 0x15AD,  Vendor::VMWare },
-    { 0x1AF4,  Vendor::VirtIO },
-    { 0x10001, Vendor::Vivante },
-    { 0x10002, Vendor::VeriSilicon },
-    { 0x10003, Vendor::Kazan },
-    { 0x10004, Vendor::CodePlay },
-    { 0x10005, Vendor::Mesa },
-    { 0x10006, Vendor::PoCL },
+static const std::unordered_map<std::uint64_t, vendor_t> vendorIdMap = {
+    { 0x0000,  vendor_t::Unknown },
+    { 0x1002,  vendor_t::AMD },
+    { 0x106B,  vendor_t::Apple },
+    { 0x13B5,  vendor_t::ARM },
+    { 0x1AE0,  vendor_t::Google },
+    { 0x1010,  vendor_t::ImgTec },
+    { 0x8086,  vendor_t::Intel },
+    { 0x1414,  vendor_t::Microsoft },
+    { 0x10DE,  vendor_t::Nvidia },
+    { 0x5143,  vendor_t::Qualcomm },
+    { 0x144D,  vendor_t::Samsung },
+    { 0x14E4,  vendor_t::Broadcom },
+    { 0x15AD,  vendor_t::VMWare },
+    { 0x1AF4,  vendor_t::VirtIO },
+    { 0x10001, vendor_t::Vivante },
+    { 0x10002, vendor_t::VeriSilicon },
+    { 0x10003, vendor_t::Kazan },
+    { 0x10004, vendor_t::CodePlay },
+    { 0x10005, vendor_t::Mesa },
+    { 0x10006, vendor_t::PoCL },
 };
 
-static const std::unordered_map<Vendor, std::wstring_view> vendorNameMap = {
-    { Vendor::Unknown,     L"Unknown" },
-    { Vendor::AMD,         L"AMD" },
-    { Vendor::Apple,       L"Apple" },
-    { Vendor::ARM,         L"ARM" },
-    { Vendor::Google,      L"Google" },
-    { Vendor::ImgTec,      L"Img Tec" },
-    { Vendor::Intel,       L"Intel" },
-    { Vendor::Microsoft,   L"Microsoft" },
-    { Vendor::Nvidia,      L"Nvidia" },
-    { Vendor::Qualcomm,    L"Qualcomm" },
-    { Vendor::Samsung,     L"Samsung" },
-    { Vendor::Broadcom,    L"Broadcom" },
-    { Vendor::VMWare,      L"VMWare" },
-    { Vendor::VirtIO,      L"VirtIO" },
-    { Vendor::Vivante,     L"Vivante" },
-    { Vendor::VeriSilicon, L"VeriSilicon" },
-    { Vendor::Kazan,       L"Kazan" },
-    { Vendor::CodePlay,    L"CodePlay" },
-    { Vendor::Mesa,        L"Mesa" },
-    { Vendor::PoCL,        L"PoCL" },
+static const std::unordered_map<vendor_t, std::wstring_view> vendorNameMap = {
+    { vendor_t::Unknown,     L"Unknown" },
+    { vendor_t::AMD,         L"AMD" },
+    { vendor_t::Apple,       L"Apple" },
+    { vendor_t::ARM,         L"ARM" },
+    { vendor_t::Google,      L"Google" },
+    { vendor_t::ImgTec,      L"Img Tec" },
+    { vendor_t::Intel,       L"Intel" },
+    { vendor_t::Microsoft,   L"Microsoft" },
+    { vendor_t::Nvidia,      L"Nvidia" },
+    { vendor_t::Qualcomm,    L"Qualcomm" },
+    { vendor_t::Samsung,     L"Samsung" },
+    { vendor_t::Broadcom,    L"Broadcom" },
+    { vendor_t::VMWare,      L"VMWare" },
+    { vendor_t::VirtIO,      L"VirtIO" },
+    { vendor_t::Vivante,     L"Vivante" },
+    { vendor_t::VeriSilicon, L"VeriSilicon" },
+    { vendor_t::Kazan,       L"Kazan" },
+    { vendor_t::CodePlay,    L"CodePlay" },
+    { vendor_t::Mesa,        L"Mesa" },
+    { vendor_t::PoCL,        L"PoCL" },
 };
 
 [[nodiscard]] static inline std::wstring getWin32ErrorMessage(const DWORD dwError) {
@@ -182,7 +188,7 @@ struct DLLBase {
     }
 
 protected:
-    ScopedLibrary m_dll{ nullptr };
+    scoped_library_t m_dll{ nullptr };
 };
 #define DLLBASE_DECL_INSTANCE(Class) \
     [[nodiscard]] static inline const Class& instance() { \
@@ -230,6 +236,30 @@ private:
 #define USER32_AVAILABLE (User32DLL::instance().isAvailable())
 #define USER32_API(Name) (User32DLL::instance().p##Name)
 
+struct Gdi32DLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(Gdi32DLL)
+
+    DECL_API(CreateDCW)
+    DECL_API(DeleteDC)
+    DECL_API(GetDeviceCaps)
+
+private:
+    Gdi32DLL() : DLLBase() {
+        LOAD_DLL(gdi32, m_dll)
+        if (m_dll) {
+            LOAD_API(m_dll.get(), CreateDCW)
+            LOAD_API(m_dll.get(), DeleteDC)
+            LOAD_API(m_dll.get(), GetDeviceCaps)
+        } else {
+            std::wcerr << L"Failed to load \"gdi32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+
+    ~Gdi32DLL() = default;
+};
+#define GDI32_AVAILABLE (Gdi32DLL::instance().isAvailable())
+#define GDI32_API(Name) (Gdi32DLL::instance().p##Name)
+
 struct DXGIDLL final : public DLLBase {
     DLLBASE_DECL_INSTANCE(DXGIDLL)
 
@@ -252,63 +282,180 @@ private:
 #define DXGI_AVAILABLE (DXGIDLL::instance().isAvailable())
 #define DXGI_API(Name) (DXGIDLL::instance().p##Name)
 
-[[nodiscard]] static inline Vendor vendorIdToVendor(const std::uint64_t vendorId) {
+struct SHCOREDLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(SHCOREDLL)
+
+    DECL_API(GetDpiForMonitor)
+
+private:
+    SHCOREDLL() : DLLBase() {
+        LOAD_DLL(shcore, m_dll)
+        if (m_dll) {
+            if (::IsWindows8Point1OrGreater()) {
+                LOAD_API(m_dll.get(), GetDpiForMonitor)
+            }
+        } else {
+            std::wcerr << L"Failed to load \"shcore.dll\": " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+
+    ~SHCOREDLL() = default;
+};
+#define SHCORE_AVAILABLE (SHCOREDLL::instance().isAvailable())
+#define SHCORE_API(Name) (SHCOREDLL::instance().p##Name)
+
+[[nodiscard]] static inline vendor_t vendorIdToVendor(const std::uint64_t vendorId) {
     const auto it = vendorIdMap.find(vendorId);
     if (it != vendorIdMap.end()) {
         return it->second;
     }
-    return Vendor::Unknown;
+    return vendor_t::Unknown;
 }
 
-[[nodiscard]] static inline bool getSdrWhiteLevelInNit(const DXGI_OUTPUT_DESC1 &outputDesc, float& levelOut)
-{
-    if (!USER32_API(GetMonitorInfoW) || !USER32_API(GetDisplayConfigBufferSizes) || !USER32_API(DisplayConfigGetDeviceInfo) || !USER32_API(QueryDisplayConfig)) {
+[[nodiscard]] static inline bool getPathInfo(const std::wstring& targetDeviceName, path_info_t& pathInfoOut) {
+    if (!USER32_API(GetDisplayConfigBufferSizes) || !USER32_API(DisplayConfigGetDeviceInfo) || !USER32_API(QueryDisplayConfig)) {
         return false;
     }
-    std::vector<DISPLAYCONFIG_PATH_INFO> pathInfos{};
+    if (targetDeviceName.empty()) {
+        return false;
+    }
+    pathInfoOut = {};
     std::uint32_t pathInfoCount{ 0 };
     std::uint32_t modeInfoCount{ 0 };
     LONG result{ ERROR_SUCCESS };
     do {
         if (USER32_API(GetDisplayConfigBufferSizes)(QDC_ONLY_ACTIVE_PATHS, &pathInfoCount, &modeInfoCount) == ERROR_SUCCESS) {
-            pathInfos.resize(pathInfoCount);
-            std::vector<DISPLAYCONFIG_MODE_INFO> modeInfos(modeInfoCount);
-            result = USER32_API(QueryDisplayConfig)(QDC_ONLY_ACTIVE_PATHS, &pathInfoCount, pathInfos.data(), &modeInfoCount, modeInfos.data(), nullptr);
+            pathInfoOut.resize(pathInfoCount);
+            mode_info_t modeInfos(modeInfoCount);
+            result = USER32_API(QueryDisplayConfig)(QDC_ONLY_ACTIVE_PATHS, &pathInfoCount, pathInfoOut.data(), &modeInfoCount, modeInfos.data(), nullptr);
         } else {
             std::wcerr << L"\"GetDisplayConfigBufferSizes\" failed: " << getLastWin32ErrorMessage() << std::endl;
+            pathInfoOut = {};
             return false;
         }
     } while (result == ERROR_INSUFFICIENT_BUFFER);
-    MONITORINFOEXW monitorInfo{};
-    monitorInfo.cbSize = sizeof(monitorInfo);
-    if (!USER32_API(GetMonitorInfoW)(outputDesc.Monitor, &monitorInfo)) {
-        std::wcerr << L"\"GetMonitorInfoW\" failed: " << getLastWin32ErrorMessage() << std::endl;
+    if (result != ERROR_SUCCESS) {
+        std::wcerr << L"\"QueryDisplayConfig\" failed: " << getLastWin32ErrorMessage() << std::endl;
+        pathInfoOut = {};
+        return false;
+    }
+    auto discardThese =
+            std::remove_if(pathInfoOut.begin(), pathInfoOut.end(), [&](const auto& path) -> bool {
+                DISPLAYCONFIG_SOURCE_DEVICE_NAME deviceName{};
+                deviceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+                deviceName.header.size = sizeof(deviceName);
+                deviceName.header.adapterId = path.sourceInfo.adapterId;
+                deviceName.header.id = path.sourceInfo.id;
+                if (USER32_API(DisplayConfigGetDeviceInfo)(&deviceName.header) == ERROR_SUCCESS) {
+                    return std::wcscmp(targetDeviceName.c_str(), deviceName.viewGdiDeviceName) != 0;
+                } else {
+                    std::wcerr << L"\"DisplayConfigGetDeviceInfo\" failed: " << getLastWin32ErrorMessage() << std::endl;
+                    return true;
+                }
+            });
+    pathInfoOut.erase(discardThese, pathInfoOut.end());
+    return !pathInfoOut.empty();
+}
+
+[[nodiscard]] static inline bool getUserFriendlyName(const path_info_t& pathInfos, std::wstring& nameOut) {
+    if (!USER32_API(DisplayConfigGetDeviceInfo)) {
         return false;
     }
     for (auto&& info : std::as_const(pathInfos)) {
-        DISPLAYCONFIG_SOURCE_DEVICE_NAME deviceName{};
+        DISPLAYCONFIG_TARGET_DEVICE_NAME deviceName{};
+        deviceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
         deviceName.header.size = sizeof(deviceName);
-        deviceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
-        deviceName.header.adapterId = info.sourceInfo.adapterId;
-        deviceName.header.id = info.sourceInfo.id;
+        deviceName.header.adapterId = info.targetInfo.adapterId;
+        deviceName.header.id = info.targetInfo.id;
         if (USER32_API(DisplayConfigGetDeviceInfo)(&deviceName.header) == ERROR_SUCCESS) {
-            if (std::wcscmp(monitorInfo.szDevice, deviceName.viewGdiDeviceName) == 0) {
-                DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel{};
-                whiteLevel.header.size = sizeof(whiteLevel);
-                whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
-                whiteLevel.header.adapterId = info.targetInfo.adapterId;
-                whiteLevel.header.id = info.targetInfo.id;
-                if (USER32_API(DisplayConfigGetDeviceInfo)(&whiteLevel.header) == ERROR_SUCCESS) {
-                    levelOut = static_cast<float>(whiteLevel.SDRWhiteLevel) / 1000.f * 80.f; // MSDN told me this formula ...
-                    return true;
-                } else {
-                    std::wcerr << L"\"DisplayConfigGetDeviceInfo\" failed: " << getLastWin32ErrorMessage() << std::endl;
-                }
-            }
+            nameOut = deviceName.monitorFriendlyDeviceName;
+            return true;
         } else {
             std::wcerr << L"\"DisplayConfigGetDeviceInfo\" failed: " << getLastWin32ErrorMessage() << std::endl;
         }
     }
+    return false;
+}
+
+[[nodiscard]] static inline bool getSdrWhiteLevelInNit(const path_info_t& pathInfos, float& levelOut) {
+    if (!USER32_API(DisplayConfigGetDeviceInfo)) {
+        return false;
+    }
+    for (auto&& info : std::as_const(pathInfos)) {
+        DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel{};
+        whiteLevel.header.size = sizeof(whiteLevel);
+        whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+        whiteLevel.header.adapterId = info.targetInfo.adapterId;
+        whiteLevel.header.id = info.targetInfo.id;
+        if (USER32_API(DisplayConfigGetDeviceInfo)(&whiteLevel.header) == ERROR_SUCCESS) {
+            levelOut = static_cast<float>(whiteLevel.SDRWhiteLevel) / 1000.f * 80.f; // MSDN told me this formula ...
+            return true;
+        } else {
+            std::wcerr << L"\"DisplayConfigGetDeviceInfo\" failed: " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] static inline bool getRefreshRate(const std::wstring& targetDeviceName, const path_info_t& pathInfos, float& rateOut) {
+    for (auto&& info : std::as_const(pathInfos)) {
+        const auto& rawRefreshRate = info.targetInfo.refreshRate;
+        if (rawRefreshRate.Numerator > 0 && rawRefreshRate.Denominator > 0) {
+            rateOut = static_cast<float>(rawRefreshRate.Numerator) / static_cast<float>(rawRefreshRate.Denominator);
+            return true;
+        }
+    }
+    if (targetDeviceName.empty()) { // The following solutions need the device name to be correct.
+        return false;
+    }
+    if (USER32_API(EnumDisplaySettingsW)) {
+        DEVMODEW devMode{};
+        if (USER32_API(EnumDisplaySettingsW)(targetDeviceName.c_str(), ENUM_CURRENT_SETTINGS, &devMode)) {
+            const auto& refreshRate = devMode.dmDisplayFrequency;
+            if (refreshRate > 1) { // 0,1 means hardware default.
+                rateOut = static_cast<float>(refreshRate);
+                return true;
+            }
+        } else {
+            std::wcerr << L"\"EnumDisplaySettingsW\" failed: " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+    if (GDI32_API(CreateDCW) && GDI32_API(DeleteDC) && GDI32_API(GetDeviceCaps)) {
+        const HDC hdc = GDI32_API(CreateDCW)(targetDeviceName.c_str(), targetDeviceName.c_str(), nullptr, nullptr);
+        if (hdc) {
+            const auto refreshRate = GDI32_API(GetDeviceCaps)(hdc, VREFRESH);
+            if (!GDI32_API(DeleteDC(hdc))) {
+                std::wcerr << L"\"DeleteDC\" failed: " << getLastWin32ErrorMessage() << std::endl;
+            }
+            if (refreshRate > 1) { // 0,1 means hardware default.
+                rateOut = static_cast<float>(refreshRate);
+                return true;
+            }
+        } else {
+            std::wcerr << L"\"CreateDCW\" failed: " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] static inline bool getDpi(const HMONITOR monitor, std::uint32_t& dpiOut) {
+    assert(monitor);
+    if (!monitor) {
+        dpiOut = USER_DEFAULT_SCREEN_DPI;
+        return false;
+    }
+    if (SHCORE_API(GetDpiForMonitor)) {
+        std::uint32_t dpiX{ 0 };
+        std::uint32_t dpiY{ 0 };
+        const HRESULT hr = SHCORE_API(GetDpiForMonitor)(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
+        if (SUCCEEDED(hr)) {
+            dpiOut = dpiX;
+            return true;
+        } else {
+            std::wcerr << L"\"GetDpiForMonitor\" failed: " << getComErrorMessage(hr) << std::endl;
+        }
+    }
+    dpiOut = USER_DEFAULT_SCREEN_DPI;
     return false;
 }
 
@@ -385,8 +532,8 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
         std::wcout << L"Device name: " << adapterDesc1.Description << std::endl;
         std::wcout << L"Vendor ID: 0x" << std::hex << adapterDesc1.VendorId << std::dec;
         {
-            const Vendor vendor = vendorIdToVendor(adapterDesc1.VendorId);
-            if (vendor != Vendor::Unknown) {
+            const vendor_t vendor = vendorIdToVendor(adapterDesc1.VendorId);
+            if (vendor != vendor_t::Unknown) {
                 std::wcout << L" (" << vendorNameMap.at(vendor) << L')';
             }
             std::wcout << std::endl;
@@ -452,15 +599,6 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                 }
             }
             {
-                DEVMODEW devMode{};
-                if (USER32_API(EnumDisplaySettingsW) && USER32_API(EnumDisplaySettingsW)(outputDesc.DeviceName, ENUM_CURRENT_SETTINGS, &devMode)) {
-                    const auto& refreshRate = devMode.dmDisplayFrequency;
-                    if (refreshRate > 1) {
-                        std::wcout << L"Current refresh rate: " << refreshRate << L" Hz" << std::endl;
-                    }
-                }
-            }
-            {
                 ComPtr<IDXGIOutput6> output6;
                 hr = output->QueryInterface(IID_PPV_ARGS(output6.GetAddressOf()));
                 if (SUCCEEDED(hr)) {
@@ -521,7 +659,7 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                                     return L"Unknown";
                             }
                         }();
-                        float sdrWhiteLevel{ kDefaultSDRWhiteLevel };
+
                         std::wcout << L"Bits per color: " << outputDesc1.BitsPerColor << std::endl;
                         std::wcout << L"Color space: " << colorSpace << std::endl;
                         std::wcout << L"Red primary: " << outputDesc1.RedPrimary[0] << L", " << outputDesc1.RedPrimary[1] << std::endl;
@@ -531,10 +669,30 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                         std::wcout << L"Minimum luminance: " << outputDesc1.MinLuminance << L" nit" << std::endl;
                         std::wcout << L"Maximum luminance: " << outputDesc1.MaxLuminance << L" nit" << std::endl;
                         std::wcout << L"Maximum average full frame luminance: " << outputDesc1.MaxFullFrameLuminance << L" nit" << std::endl;
-                        if (getSdrWhiteLevelInNit(outputDesc1, sdrWhiteLevel)) {
-                            std::wcout << L"SDR white level: " << sdrWhiteLevel << L" nit" << std::endl;
-                        }
                     }
+                }
+            }
+            {
+                path_info_t pathInfos{};
+                if (getPathInfo(outputDesc.DeviceName, pathInfos)) {
+                    float sdrWhiteLevel{ kDefaultSDRWhiteLevel };
+                    if (getSdrWhiteLevelInNit(pathInfos, sdrWhiteLevel)) {
+                        std::wcout << L"SDR white level: " << sdrWhiteLevel << L" nit" << std::endl;
+                    }
+                    float refreshRate{ kDefaultRefreshRate };
+                    if (getRefreshRate(outputDesc.DeviceName, pathInfos, refreshRate)) {
+                        std::wcout << L"Current refresh rate: " << refreshRate << L" Hz" << std::endl;
+                    }
+                    std::wstring userFriendlyName{};
+                    if (getUserFriendlyName(pathInfos, userFriendlyName)) {
+                        std::wcout << L"Display name: " << userFriendlyName << std::endl;
+                    }
+                }
+            }
+            {
+                std::uint32_t dpi{ 0 };
+                if (getDpi(outputDesc.Monitor, dpi)) {
+                    std::wcout << L"Dots-per-inch: " << dpi << std::endl;
                 }
             }
         }
