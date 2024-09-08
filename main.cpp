@@ -24,6 +24,7 @@
 
 /* Most code is based on https://github.com/LizardByte/Sunshine/blob/master/tools/dxgi.cpp */
 
+//#include "registry.hpp"
 #include <windows.h>
 #include <versionhelpers.h>
 #include <shellscalingapi.h>
@@ -35,6 +36,22 @@
 #include <iostream>
 #include <memory>
 #include <unordered_map>
+#include <string>
+
+#define USE_SP_ALTPLATFORM_INFO_V1 0
+#define USE_SP_ALTPLATFORM_INFO_V3 1
+#define USE_SP_DRVINFO_DATA_V1 0
+#define USE_SP_BACKUP_QUEUE_PARAMS_V1 0
+#define USE_SP_INF_SIGNER_INFO_V1 0
+#include <setupapi.h>
+#include <initguid.h>
+#include <devguid.h>
+#include <devpkey.h>
+#undef USE_SP_ALTPLATFORM_INFO_V1
+#undef USE_SP_ALTPLATFORM_INFO_V3
+#undef USE_SP_DRVINFO_DATA_V1
+#undef USE_SP_BACKUP_QUEUE_PARAMS_V1
+#undef USE_SP_INF_SIGNER_INFO_V1
 
 using namespace Microsoft::WRL;
 
@@ -304,6 +321,36 @@ private:
 #define SHCORE_AVAILABLE (SHCOREDLL::instance().isAvailable())
 #define SHCORE_API(Name) (SHCOREDLL::instance().p##Name)
 
+struct SETUPAPIDLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(SETUPAPIDLL)
+
+    // Windows 2000
+    DECL_API(SetupDiDestroyDeviceInfoList)
+    DECL_API(SetupDiEnumDeviceInfo)
+    // Windows Vista
+    DECL_API(SetupDiGetClassDevsW)
+    DECL_API(SetupDiGetDevicePropertyW)
+
+private:
+    SETUPAPIDLL() : DLLBase() {
+        LOAD_DLL(setupapi, m_dll)
+        if (m_dll) {
+            LOAD_API(m_dll.get(), SetupDiDestroyDeviceInfoList)
+            LOAD_API(m_dll.get(), SetupDiEnumDeviceInfo)
+            if (::IsWindowsVistaOrGreater()) {
+                LOAD_API(m_dll.get(), SetupDiGetClassDevsW)
+                LOAD_API(m_dll.get(), SetupDiGetDevicePropertyW)
+            }
+        } else {
+            std::wcerr << L"Failed to load \"setupapi.dll\": " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+
+    ~SETUPAPIDLL() = default;
+};
+#define SETUPAPI_AVAILABLE (SETUPAPIDLL::instance().isAvailable())
+#define SETUPAPI_API(Name) (SETUPAPIDLL::instance().p##Name)
+
 [[nodiscard]] static inline vendor_t vendorIdToVendor(const std::uint64_t vendorId) {
     const auto it = vendorIdMap.find(vendorId);
     if (it != vendorIdMap.end()) {
@@ -459,6 +506,127 @@ private:
     return false;
 }
 
+struct DriverInfo final {
+    std::wstring version{};
+    std::wstring date{};
+};
+
+[[nodiscard]] static inline bool getDriverInfo(const std::wstring& deviceName, DriverInfo& infoOut) {
+    assert(!deviceName.empty());
+    if (deviceName.empty()) {
+        return false;
+    }
+    if (!SETUPAPI_API(SetupDiGetClassDevsW) || !SETUPAPI_API(SetupDiDestroyDeviceInfoList) || !SETUPAPI_API(SetupDiEnumDeviceInfo) || !SETUPAPI_API(SetupDiGetDevicePropertyW)) {
+        return false;
+    }
+    HDEVINFO hDevInfo = SETUPAPI_API(SetupDiGetClassDevsW)(&GUID_DEVCLASS_DISPLAY, nullptr, nullptr, DIGCF_PRESENT);
+    if (!hDevInfo || hDevInfo == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    const struct DevInfoListDeleter final {
+        explicit DevInfoListDeleter(HDEVINFO devInfo) : m_devInfo(devInfo) {}
+        ~DevInfoListDeleter() {
+            if (m_devInfo && m_devInfo != INVALID_HANDLE_VALUE) {
+                SETUPAPI_API(SetupDiDestroyDeviceInfoList)(m_devInfo);
+            }
+        }
+    private:
+        HDEVINFO m_devInfo{ nullptr };
+    } devInfoListDeleter{ hDevInfo };
+    const auto shrinkToFit = [](std::wstring& str) {
+        if (str.empty()) {
+            return;
+        }
+        const std::size_t index = str.find(L'\0');
+        if (index == std::wstring::npos) {
+            return;
+        }
+        str.resize(index);
+    };
+    std::wstring registryKey{};
+    std::wstring providerName{};
+    std::wstring driverVersion{};
+    std::wstring driverDate{};
+    {
+        bool found{ false };
+        std::wstring buffer(512, L'\0');
+        ULONG dataType{ 0 };
+        SP_DEVINFO_DATA deviceInfoData{};
+        deviceInfoData.cbSize = sizeof(deviceInfoData);
+        for (DWORD index = 0; SETUPAPI_API(SetupDiEnumDeviceInfo)(hDevInfo, index, &deviceInfoData); ++index) {
+            if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverDesc, &dataType, (PBYTE)buffer.data(), buffer.size(), nullptr, 0)) {
+                ZeroMemory(buffer.data(), buffer.size());
+                continue;
+            }
+            if (buffer.find(deviceName) == std::wstring::npos) {
+                ZeroMemory(buffer.data(), buffer.size());
+                continue;
+            }
+            ZeroMemory(buffer.data(), buffer.size());
+            found = true;
+            if (SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_Driver, &dataType, (PBYTE)buffer.data(), buffer.size(), nullptr, 0)) {
+                registryKey = buffer;
+                shrinkToFit(registryKey);
+                ZeroMemory(buffer.data(), buffer.size());
+            }
+            break;
+        }
+        if (!found) {
+            return false;
+        }
+        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverProvider, &dataType, (PBYTE)buffer.data(), buffer.size(), nullptr, 0)) {
+            return false;
+        }
+        providerName = buffer;
+        shrinkToFit(providerName);
+        ZeroMemory(buffer.data(), buffer.size());
+        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverVersion, &dataType, (PBYTE)buffer.data(), buffer.size(), nullptr, 0)) {
+            return false;
+        }
+        driverVersion = buffer;
+        shrinkToFit(driverVersion);
+        ZeroMemory(buffer.data(), buffer.size());
+        FILETIME fileTime{};
+        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverDate, &dataType, (PBYTE)&fileTime, sizeof(fileTime), nullptr, 0)) {
+            return false;
+        }
+        SYSTEMTIME systemTime{};
+        FileTimeToSystemTime(&fileTime, &systemTime);
+        driverDate = std::to_wstring(systemTime.wYear) + L'-' + std::to_wstring(systemTime.wMonth) + L'-' + std::to_wstring(systemTime.wDay);
+    }
+    if (providerName.find(L"NVIDIA") != std::wstring::npos) {
+        // Ignore the Windows/DirectX version by taking the last digits of the internal version
+        // and moving the version dot. Coincidentally, that's the user-facing string. For example:
+        // 9.18.13.4788 -> 3.4788 -> 347.88
+        if (driverVersion.size() >= 6) {
+            std::wstring rightPart = driverVersion.substr(driverVersion.size() - 6);
+            for (std::size_t index = rightPart.find(L'.'); index != std::wstring::npos; index = rightPart.find(L'.')) {
+                rightPart.erase(index, 1);
+            }
+            rightPart.insert(3, L".");
+            driverVersion = rightPart;
+        }
+    }
+    if (providerName.find(L"Advanced Micro Devices") != std::wstring::npos) {
+        //
+    }
+    if (providerName.find(L"Intel") != std::wstring::npos) { // Usually "Intel Corporation".
+        // https://www.intel.com/content/www/us/en/support/articles/000005654/graphics.html
+        // Drop off the OS and DirectX version. For example:
+        // 27.20.100.8935 -> 100.8935
+        std::size_t index = driverVersion.find(L'.');
+        if (index != std::wstring::npos) {
+            index = driverVersion.find(L'.', index + 1);
+            if (index != std::wstring::npos) {
+                driverVersion = driverVersion.substr(index);
+            }
+        }
+    }
+    infoOut.version = driverVersion;
+    infoOut.date = driverDate;
+    return true;
+}
+
 extern "C" int WINAPI wmain(int, wchar_t**) {
     std::setlocale(LC_ALL, "C.UTF-8");
     _setmode(_fileno(stdout), _O_U8TEXT);
@@ -501,6 +669,7 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
         }
     }
     if (!DXGI_API(CreateDXGIFactory1)) {
+        std::wcerr << kColorRed << L"The critical function \"CreateDXGIFactory1\" is not available for some unknown reason, aborted." << kColorDefault << std::endl;
         return EXIT_FAILURE;
     }
     ComPtr<IDXGIFactory1> factory;
@@ -544,6 +713,26 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
         std::wcout << L"Shared system memory: " << adapterDesc1.SharedSystemMemory / 1048576 << L" MiB" << std::endl;
         std::wcout << L"Variable refresh rate supported: " << (variableRefreshRateSupported ? L"Yes" : L"No") << std::endl;
         std::wcout << L"Software simulation (rendered by CPU): " << ((adapterDesc1.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? L"Yes" : L"No") << std::endl;
+        {
+            ComPtr<IDXGIAdapter3> adapter3;
+            hr = adapter->QueryInterface(IID_PPV_ARGS(adapter3.GetAddressOf()));
+            if (SUCCEEDED(hr)) {
+                // Simple heuristic but without profiling it's hard to do better.
+                DXGI_QUERY_VIDEO_MEMORY_INFO nonLocalVideoMemoryInfo{};
+                hr = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &nonLocalVideoMemoryInfo);
+                if (SUCCEEDED(hr)) {
+                    const bool isAdapterIntegrated = nonLocalVideoMemoryInfo.Budget == 0;
+                    std::wcout << L"Integrated device: " << (isAdapterIntegrated ? L"Yes" : L"No") << std::endl;
+                }
+            }
+        }
+        {
+            DriverInfo driverInfo{};
+            if (getDriverInfo(adapterDesc1.Description, driverInfo)) {
+                std::wcout << L"Driver version: " << driverInfo.version << std::endl;
+                std::wcout << L"Driver date: " << driverInfo.date << std::endl;
+            }
+        }
         ComPtr<IDXGIOutput> output;
         for (std::uint32_t outputIndex = 0; adapter->EnumOutputs(outputIndex, output.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++outputIndex) {
             DXGI_OUTPUT_DESC outputDesc{};
@@ -587,7 +776,7 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                         const auto modeList = std::make_unique<DXGI_MODE_DESC1[]>(modeCount);
                         hr = output1->GetDisplayModeList1(kDefaultPixelFormat, 0, &modeCount, modeList.get());
                         if (SUCCEEDED(hr)) {
-                            float maxRefreshRate{ 60.f };
+                            float maxRefreshRate{ kDefaultRefreshRate };
                             for (std::size_t modeIndex = 0; modeIndex != static_cast<std::size_t>(modeCount); ++modeIndex) {
                                 const DXGI_MODE_DESC1& mode = modeList[modeIndex];
                                 const auto refreshRate = static_cast<float>(mode.RefreshRate.Numerator) / static_cast<float>(mode.RefreshRate.Denominator);
@@ -614,7 +803,7 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709:
                                     return L"[ITU-R] RGB (16-235), gamma: 2.2, siting: image, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P2020:
-                                    return L"RGB (16-235), gamma: 2.2, siting: image, primaries: BT.2020";
+                                    return L"[HDR] RGB (16-235), gamma: 2.2, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_G22_NONE_P709_X601:
                                     return L"YCbCr (0-255), gamma: 2.2, siting: image, primaries: BT.709, transfer matrix: BT.601";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601:
@@ -626,40 +815,39 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709:
                                     return L"YCbCr (0-255), gamma: 2.2, siting: video, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020:
-                                    return L"YCbCr (16-235), gamma: 2.2, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (16-235), gamma: 2.2, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020:
-                                    return L"YCbCr (0-255), gamma: 2.2, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (0-255), gamma: 2.2, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
-                                    return L"RGB (0-255), gamma: 2084, siting: image, primaries: BT.2020";
+                                    return L"[HDR] RGB (0-255), gamma: 2084, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020:
-                                    return L"YCbCr (16-235), gamma: 2084, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (16-235), gamma: 2084, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020:
-                                    return L"RGB (16-235), gamma: 2084, siting: image, primaries: BT.2020";
+                                    return L"[HDR] RGB (16-235), gamma: 2084, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_TOPLEFT_P2020:
-                                    return L"YCbCr (16-235), gamma: 2.2, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (16-235), gamma: 2.2, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020:
-                                    return L"YCbCr (16-235), gamma: 2084, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (16-235), gamma: 2084, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020:
-                                    return L"RGB (0-255), gamma: 2.2, siting: image, primaries: BT.2020";
+                                    return L"[HDR] RGB (0-255), gamma: 2.2, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020:
-                                    return L"YCbCr (16-235), gamma: HLG, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (16-235), gamma: HLG, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020:
-                                    return L"YCbCr (0-255), gamma: HLG, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (0-255), gamma: HLG, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P709:
                                     return L"RGB (16-235), gamma: 2.4, siting: image, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P2020:
-                                    return L"RGB (16-235), gamma: 2.4, siting: image, primaries: BT.2020";
+                                    return L"[HDR] RGB (16-235), gamma: 2.4, siting: image, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P709:
                                     return L"YCbCr (16-235), gamma: 2.4, siting: video, primaries: BT.709";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P2020:
-                                    return L"YCbCr (16-235), gamma: 2.4, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (16-235), gamma: 2.4, siting: video, primaries: BT.2020";
                                 case DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_TOPLEFT_P2020:
-                                    return L"YCbCr (16-235), gamma: 2.4, siting: video, primaries: BT.2020";
+                                    return L"[HDR] YCbCr (16-235), gamma: 2.4, siting: video, primaries: BT.2020";
                                 default:
                                     return L"Unknown";
                             }
                         }();
-
                         std::wcout << L"Bits per color: " << outputDesc1.BitsPerColor << std::endl;
                         std::wcout << L"Color space: " << colorSpace << std::endl;
                         std::wcout << L"Red primary: " << outputDesc1.RedPrimary[0] << L", " << outputDesc1.RedPrimary[1] << std::endl;
@@ -690,9 +878,10 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                 }
             }
             {
-                std::uint32_t dpi{ 0 };
+                std::uint32_t dpi{ USER_DEFAULT_SCREEN_DPI };
                 if (getDpi(outputDesc.Monitor, dpi)) {
-                    std::wcout << L"Dots-per-inch: " << dpi << std::endl;
+                    const auto scale = std::uint32_t(std::round(static_cast<float>(dpi) / static_cast<float>(USER_DEFAULT_SCREEN_DPI) * 100.f));
+                    std::wcout << L"Dots-per-inch: " << dpi << L" (" << scale << "%)" << std::endl;
                 }
             }
         }

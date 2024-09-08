@@ -10,7 +10,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 
-add_executable(${PROJECT_NAME} main.cpp app.manifest app.rc)
+add_executable(${PROJECT_NAME}
+    app.manifest
+    app.rc
+    registry.hpp
+    registry.cpp
+    main.cpp
+)
 
 set(_WIN32_WINNT_WIN10 0x0A00)
 set(NTDDI_WIN10_NI 0x0A00000C)
