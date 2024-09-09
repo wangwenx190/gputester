@@ -24,7 +24,7 @@
 
 /* Most code is based on https://github.com/LizardByte/Sunshine/blob/master/tools/dxgi.cpp */
 
-//#include "registry.hpp"
+#include "registry.hpp"
 #include <windows.h>
 #include <versionhelpers.h>
 #include <shellscalingapi.h>
@@ -38,6 +38,8 @@
 #include <unordered_map>
 #include <string>
 
+// Code copied from Unreal Engine 5.4.4:
+// Engine/Source/Runtime/Core/Private/Windows/WindowsPlatformMisc.cpp
 #define USE_SP_ALTPLATFORM_INFO_V1 0
 #define USE_SP_ALTPLATFORM_INFO_V3 1
 #define USE_SP_DRVINFO_DATA_V1 0
@@ -52,8 +54,10 @@
 #undef USE_SP_DRVINFO_DATA_V1
 #undef USE_SP_BACKUP_QUEUE_PARAMS_V1
 #undef USE_SP_INF_SIGNER_INFO_V1
+// UE 5 source code ends here.
 
 using namespace Microsoft::WRL;
+using namespace m4x1m1l14n;
 
 using path_info_t = std::vector<DISPLAYCONFIG_PATH_INFO>;
 using mode_info_t = std::vector<DISPLAYCONFIG_MODE_INFO>;
@@ -511,6 +515,9 @@ struct DriverInfo final {
     std::wstring date{};
 };
 
+// Code copied and modified from Unreal Engine 5.4.4:
+// Engine/Source/Runtime/Core/Public/GenericPlatform/GenericPlatformDriver.h
+// Engine/Source/Runtime/Core/Private/Windows/WindowsPlatformMisc.cpp
 [[nodiscard]] static inline bool getDriverInfo(const std::wstring& deviceName, DriverInfo& infoOut) {
     assert(!deviceName.empty());
     if (deviceName.empty()) {
@@ -543,7 +550,7 @@ struct DriverInfo final {
         }
         str.resize(index);
     };
-    std::wstring registryKey{};
+    std::wstring registryKeyName{};
     std::wstring providerName{};
     std::wstring driverVersion{};
     std::wstring driverDate{};
@@ -554,7 +561,7 @@ struct DriverInfo final {
         SP_DEVINFO_DATA deviceInfoData{};
         deviceInfoData.cbSize = sizeof(deviceInfoData);
         for (DWORD index = 0; SETUPAPI_API(SetupDiEnumDeviceInfo)(hDevInfo, index, &deviceInfoData); ++index) {
-            if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverDesc, &dataType, (PBYTE)buffer.data(), buffer.size(), nullptr, 0)) {
+            if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverDesc, &dataType, reinterpret_cast<PBYTE>(buffer.data()), buffer.size(), nullptr, 0)) {
                 ZeroMemory(buffer.data(), buffer.size());
                 continue;
             }
@@ -564,9 +571,9 @@ struct DriverInfo final {
             }
             ZeroMemory(buffer.data(), buffer.size());
             found = true;
-            if (SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_Driver, &dataType, (PBYTE)buffer.data(), buffer.size(), nullptr, 0)) {
-                registryKey = buffer;
-                shrinkToFit(registryKey);
+            if (SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_Driver, &dataType, reinterpret_cast<PBYTE>(buffer.data()), buffer.size(), nullptr, 0)) {
+                registryKeyName = buffer;
+                shrinkToFit(registryKeyName);
                 ZeroMemory(buffer.data(), buffer.size());
             }
             break;
@@ -574,20 +581,20 @@ struct DriverInfo final {
         if (!found) {
             return false;
         }
-        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverProvider, &dataType, (PBYTE)buffer.data(), buffer.size(), nullptr, 0)) {
+        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverProvider, &dataType, reinterpret_cast<PBYTE>(buffer.data()), buffer.size(), nullptr, 0)) {
             return false;
         }
         providerName = buffer;
         shrinkToFit(providerName);
         ZeroMemory(buffer.data(), buffer.size());
-        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverVersion, &dataType, (PBYTE)buffer.data(), buffer.size(), nullptr, 0)) {
+        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverVersion, &dataType, reinterpret_cast<PBYTE>(buffer.data()), buffer.size(), nullptr, 0)) {
             return false;
         }
         driverVersion = buffer;
         shrinkToFit(driverVersion);
         ZeroMemory(buffer.data(), buffer.size());
         FILETIME fileTime{};
-        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverDate, &dataType, (PBYTE)&fileTime, sizeof(fileTime), nullptr, 0)) {
+        if (!SETUPAPI_API(SetupDiGetDevicePropertyW)(hDevInfo, &deviceInfoData, &DEVPKEY_Device_DriverDate, &dataType, reinterpret_cast<PBYTE>(&fileTime), sizeof(fileTime), nullptr, 0)) {
             return false;
         }
         SYSTEMTIME systemTime{};
@@ -608,7 +615,38 @@ struct DriverInfo final {
         }
     }
     if (providerName.find(L"Advanced Micro Devices") != std::wstring::npos) {
-        //
+        // Get the AMD specific information directly from the registry.
+        // AMD AGS could be used instead, but retrieving the radeon software version cannot occur after a D3D device
+        // has been created, and this function could be called at any time.
+        if (!registryKeyName.empty()) {
+            const std::wstring keyPath = L"SYSTEM\\CurrentControlSet\\Control\\Class\\" + registryKeyName;
+            try {
+                if (const auto regKey = Registry::LocalMachine->Open(keyPath)) {
+                    if (regKey->HasValue(L"Catalyst_Version")) {
+                        const std::wstring catalystVersion = regKey->GetString(L"Catalyst_Version");
+                        if (!catalystVersion.empty()) {
+                            driverVersion = L"Catalyst " + catalystVersion;
+                        }
+                    }
+                    if (regKey->HasValue(L"RadeonSoftwareEdition")) {
+                        const std::wstring edition = regKey->GetString(L"RadeonSoftwareEdition");
+                        if (!edition.empty()) {
+                            if (regKey->HasValue(L"RadeonSoftwareVersion")) {
+                                const std::wstring version = regKey->GetString(L"RadeonSoftwareVersion");
+                                if (!version.empty()) {
+                                    // e.g. "Crimson 15.12" or "Catalyst 14.1".
+                                    driverVersion = edition + L' ' + version;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    std::wcerr << kColorRed << L"Failed to open registry key: HKEY_LOCAL_MACHINE\\" << keyPath << kColorDefault << std::endl;
+                }
+            } catch (const std::exception& ex) {
+                std::wcerr << kColorRed << L"Failed to access the registry: " << ex.what() << kColorDefault << std::endl;
+            }
+        }
     }
     if (providerName.find(L"Intel") != std::wstring::npos) { // Usually "Intel Corporation".
         // https://www.intel.com/content/www/us/en/support/articles/000005654/graphics.html
@@ -626,6 +664,7 @@ struct DriverInfo final {
     infoOut.date = driverDate;
     return true;
 }
+// UE 5 source code ends here.
 
 extern "C" int WINAPI wmain(int, wchar_t**) {
     std::setlocale(LC_ALL, "C.UTF-8");
@@ -729,8 +768,7 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
         {
             DriverInfo driverInfo{};
             if (getDriverInfo(adapterDesc1.Description, driverInfo)) {
-                std::wcout << L"Driver version: " << driverInfo.version << std::endl;
-                std::wcout << L"Driver date: " << driverInfo.date << std::endl;
+                std::wcout << L"Driver: " << driverInfo.version << L" (" << driverInfo.date << L')' << std::endl;
             }
         }
         ComPtr<IDXGIOutput> output;
@@ -881,7 +919,7 @@ extern "C" int WINAPI wmain(int, wchar_t**) {
                 std::uint32_t dpi{ USER_DEFAULT_SCREEN_DPI };
                 if (getDpi(outputDesc.Monitor, dpi)) {
                     const auto scale = std::uint32_t(std::round(static_cast<float>(dpi) / static_cast<float>(USER_DEFAULT_SCREEN_DPI) * 100.f));
-                    std::wcout << L"Dots-per-inch: " << dpi << L" (" << scale << "%)" << std::endl;
+                    std::wcout << L"Dots-per-inch: " << dpi << L" (" << scale << L"%)" << std::endl;
                 }
             }
         }
