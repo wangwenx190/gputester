@@ -257,15 +257,61 @@ private:
 #define USER32_AVAILABLE (User32DLL::instance().isAvailable())
 #define USER32_API(Name) (User32DLL::instance().p##Name)
 
-struct Gdi32DLL final : public DLLBase {
-    DLLBASE_DECL_INSTANCE(Gdi32DLL)
+struct AdvAPI32DLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(AdvAPI32DLL)
+
+    DECL_API(RegQueryValueExW)
+    DECL_API(RegSetValueExW)
+    DECL_API(RegDeleteValueW)
+    DECL_API(RegEnumValueW)
+    DECL_API(RegOpenKeyExW)
+    DECL_API(RegCreateKeyExW)
+    DECL_API(RegCloseKey)
+    DECL_API(RegGetValueW)
+    DECL_API(RegDeleteTreeW)
+    DECL_API(RegFlushKey)
+    DECL_API(RegSaveKeyW)
+    DECL_API(RegQueryInfoKeyW)
+    DECL_API(RegEnumKeyExW)
+    DECL_API(RegNotifyChangeKeyValue)
+
+private:
+    AdvAPI32DLL() : DLLBase() {
+        LOAD_DLL(advapi32, m_dll)
+        if (m_dll) {
+            LOAD_API(m_dll.get(), RegQueryValueExW)
+            LOAD_API(m_dll.get(), RegSetValueExW)
+            LOAD_API(m_dll.get(), RegDeleteValueW)
+            LOAD_API(m_dll.get(), RegEnumValueW)
+            LOAD_API(m_dll.get(), RegOpenKeyExW)
+            LOAD_API(m_dll.get(), RegCreateKeyExW)
+            LOAD_API(m_dll.get(), RegCloseKey)
+            LOAD_API(m_dll.get(), RegGetValueW)
+            LOAD_API(m_dll.get(), RegDeleteTreeW)
+            LOAD_API(m_dll.get(), RegFlushKey)
+            LOAD_API(m_dll.get(), RegSaveKeyW)
+            LOAD_API(m_dll.get(), RegQueryInfoKeyW)
+            LOAD_API(m_dll.get(), RegEnumKeyExW)
+            LOAD_API(m_dll.get(), RegNotifyChangeKeyValue)
+        } else {
+            std::wcerr << L"Failed to load \"advapi32.dll\": " << getLastWin32ErrorMessage() << std::endl;
+        }
+    }
+
+    ~AdvAPI32DLL() = default;
+};
+#define ADVAPI32_AVAILABLE (AdvAPI32DLL::instance().isAvailable())
+#define ADVAPI32_API(Name) (AdvAPI32DLL::instance().p##Name)
+
+struct GDI32DLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(GDI32DLL)
 
     DECL_API(CreateDCW)
     DECL_API(DeleteDC)
     DECL_API(GetDeviceCaps)
 
 private:
-    Gdi32DLL() : DLLBase() {
+    GDI32DLL() : DLLBase() {
         LOAD_DLL(gdi32, m_dll)
         if (m_dll) {
             LOAD_API(m_dll.get(), CreateDCW)
@@ -276,10 +322,10 @@ private:
         }
     }
 
-    ~Gdi32DLL() = default;
+    ~GDI32DLL() = default;
 };
-#define GDI32_AVAILABLE (Gdi32DLL::instance().isAvailable())
-#define GDI32_API(Name) (Gdi32DLL::instance().p##Name)
+#define GDI32_AVAILABLE (GDI32DLL::instance().isAvailable())
+#define GDI32_API(Name) (GDI32DLL::instance().p##Name)
 
 struct DXGIDLL final : public DLLBase {
     DLLBASE_DECL_INSTANCE(DXGIDLL)
@@ -303,13 +349,13 @@ private:
 #define DXGI_AVAILABLE (DXGIDLL::instance().isAvailable())
 #define DXGI_API(Name) (DXGIDLL::instance().p##Name)
 
-struct SHCOREDLL final : public DLLBase {
-    DLLBASE_DECL_INSTANCE(SHCOREDLL)
+struct SHCoreDLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(SHCoreDLL)
 
     DECL_API(GetDpiForMonitor)
 
 private:
-    SHCOREDLL() : DLLBase() {
+    SHCoreDLL() : DLLBase() {
         LOAD_DLL(shcore, m_dll)
         if (m_dll) {
             if (::IsWindows8Point1OrGreater()) {
@@ -320,13 +366,13 @@ private:
         }
     }
 
-    ~SHCOREDLL() = default;
+    ~SHCoreDLL() = default;
 };
-#define SHCORE_AVAILABLE (SHCOREDLL::instance().isAvailable())
-#define SHCORE_API(Name) (SHCOREDLL::instance().p##Name)
+#define SHCORE_AVAILABLE (SHCoreDLL::instance().isAvailable())
+#define SHCORE_API(Name) (SHCoreDLL::instance().p##Name)
 
-struct SETUPAPIDLL final : public DLLBase {
-    DLLBASE_DECL_INSTANCE(SETUPAPIDLL)
+struct SetupAPIDLL final : public DLLBase {
+    DLLBASE_DECL_INSTANCE(SetupAPIDLL)
 
     // Windows 2000
     DECL_API(SetupDiDestroyDeviceInfoList)
@@ -336,7 +382,7 @@ struct SETUPAPIDLL final : public DLLBase {
     DECL_API(SetupDiGetDevicePropertyW)
 
 private:
-    SETUPAPIDLL() : DLLBase() {
+    SetupAPIDLL() : DLLBase() {
         LOAD_DLL(setupapi, m_dll)
         if (m_dll) {
             LOAD_API(m_dll.get(), SetupDiDestroyDeviceInfoList)
@@ -350,10 +396,80 @@ private:
         }
     }
 
-    ~SETUPAPIDLL() = default;
+    ~SetupAPIDLL() = default;
 };
-#define SETUPAPI_AVAILABLE (SETUPAPIDLL::instance().isAvailable())
-#define SETUPAPI_API(Name) (SETUPAPIDLL::instance().p##Name)
+#define SETUPAPI_AVAILABLE (SetupAPIDLL::instance().isAvailable())
+#define SETUPAPI_API(Name) (SetupAPIDLL::instance().p##Name)
+
+extern "C" LSTATUS WINAPI
+RegQueryValueExW(HKEY hKey, LPCWSTR lpValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData) {
+    return ADVAPI32_API(RegQueryValueExW) ? ADVAPI32_API(RegQueryValueExW)(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegSetValueExW(HKEY hKey, LPCWSTR lpValueName, DWORD dwReserved, DWORD dwType, const BYTE* lpData, DWORD cbData) {
+    return ADVAPI32_API(RegSetValueExW) ? ADVAPI32_API(RegSetValueExW)(hKey, lpValueName, dwReserved, dwType, lpData, cbData) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegDeleteValueW(HKEY hKey, LPCWSTR lpValueName) {
+    return ADVAPI32_API(RegDeleteValueW) ? ADVAPI32_API(RegDeleteValueW)(hKey, lpValueName) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegEnumValueW(HKEY hKey, DWORD dwIndex, LPWSTR lpValueName, LPDWORD lpcchValueName, LPDWORD lpReserved, LPDWORD lpType, LPBYTE lpData, LPDWORD lpcbData) {
+    return ADVAPI32_API(RegEnumValueW) ? ADVAPI32_API(RegEnumValueW)(hKey, dwIndex, lpValueName, lpcchValueName, lpReserved, lpType, lpData, lpcbData) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegOpenKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD dwOptions, REGSAM samDesired, PHKEY phkResult) {
+    return ADVAPI32_API(RegOpenKeyExW) ? ADVAPI32_API(RegOpenKeyExW)(hKey, lpSubKey, dwOptions, samDesired, phkResult) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegCreateKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD dwReserved, LPWSTR lpClass, DWORD dwOptions, REGSAM samDesired, const LPSECURITY_ATTRIBUTES lpSecurityAttributes, PHKEY phkResult, LPDWORD lpdwDisposition) {
+    return ADVAPI32_API(RegCreateKeyExW) ? ADVAPI32_API(RegCreateKeyExW)(hKey, lpSubKey, dwReserved, lpClass, dwOptions, samDesired, lpSecurityAttributes, phkResult, lpdwDisposition) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegCloseKey(HKEY hKey) {
+    return ADVAPI32_API(RegCloseKey) ? ADVAPI32_API(RegCloseKey)(hKey) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegGetValueW(HKEY hKey, LPCWSTR lpSubKey, LPCWSTR lpValue, DWORD dwFlags, LPDWORD lpdwType, PVOID pvData, LPDWORD lpcbData) {
+    return ADVAPI32_API(RegGetValueW) ? ADVAPI32_API(RegGetValueW)(hKey, lpSubKey, lpValue, dwFlags, lpdwType, pvData, lpcbData) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegDeleteTreeW(HKEY hKey, LPCWSTR lpSubKey) {
+    return ADVAPI32_API(RegDeleteTreeW) ? ADVAPI32_API(RegDeleteTreeW)(hKey, lpSubKey) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegFlushKey(HKEY hKey) {
+    return ADVAPI32_API(RegFlushKey) ? ADVAPI32_API(RegFlushKey)(hKey) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegSaveKeyW(HKEY hKey, LPCWSTR lpFile, const LPSECURITY_ATTRIBUTES lpSecurityAttributes) {
+    return ADVAPI32_API(RegSaveKeyW) ? ADVAPI32_API(RegSaveKeyW)(hKey, lpFile, lpSecurityAttributes) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegQueryInfoKeyW(HKEY hKey, LPWSTR lpClass, LPDWORD lpcchClass, LPDWORD lpReserved, LPDWORD lpcSubKeys, LPDWORD lpcbMaxSubKeyLen, LPDWORD lpcbMaxClassLen, LPDWORD lpcValues, LPDWORD lpcbMaxValueNameLen, LPDWORD lpcbMaxValueLen, LPDWORD lpcbSecurityDescriptor, PFILETIME lpftLastWriteTime) {
+    return ADVAPI32_API(RegQueryInfoKeyW) ? ADVAPI32_API(RegQueryInfoKeyW)(hKey, lpClass, lpcchClass, lpReserved, lpcSubKeys, lpcbMaxSubKeyLen, lpcbMaxClassLen, lpcValues, lpcbMaxValueNameLen, lpcbMaxValueLen, lpcbSecurityDescriptor, lpftLastWriteTime) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegEnumKeyExW(HKEY hKey, DWORD dwIndex, LPWSTR lpName, LPDWORD lpcchName, LPDWORD lpReserved, LPWSTR lpClass, LPDWORD lpcchClass, PFILETIME lpftLastWriteTime) {
+    return ADVAPI32_API(RegEnumKeyExW) ? ADVAPI32_API(RegEnumKeyExW)(hKey, dwIndex, lpName, lpcchName, lpReserved, lpClass, lpcchClass, lpftLastWriteTime) : ERROR_CALL_NOT_IMPLEMENTED;
+}
+
+extern "C" LSTATUS WINAPI
+RegNotifyChangeKeyValue(HKEY hKey, BOOL bWatchSubtree, DWORD dwNotifyFilter, HANDLE hEvent, BOOL fAsynchronous) {
+    return ADVAPI32_API(RegNotifyChangeKeyValue) ? ADVAPI32_API(RegNotifyChangeKeyValue)(hKey, bWatchSubtree, dwNotifyFilter, hEvent, fAsynchronous) : ERROR_CALL_NOT_IMPLEMENTED;
+}
 
 [[nodiscard]] static inline vendor_t vendorIdToVendor(const std::uint64_t vendorId) {
     const auto it = vendorIdMap.find(vendorId);
