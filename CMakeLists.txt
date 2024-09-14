@@ -1,16 +1,24 @@
 cmake_minimum_required(VERSION 3.28)
 
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+project(gputester VERSION "2.0.0.0" LANGUAGES CXX)
 
-project(gputester VERSION "1.0.0.0" LANGUAGES CXX)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(CMAKE_CXX_STANDARD_LIBRARIES "kernel32.lib")
+
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
 
-add_executable(${PROJECT_NAME} main.cpp app.manifest app.rc)
+add_executable(${PROJECT_NAME}
+    app.manifest
+    app.rc
+    registry.hpp
+    registry.cpp
+    main.cpp
+)
 
 set(_WIN32_WINNT_WIN10 0x0A00)
 set(NTDDI_WIN10_NI 0x0A00000C)
@@ -30,6 +38,11 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     WINVER=${_WIN32_WINNT_WIN10} _WIN32_WINNT=${_WIN32_WINNT_WIN10}
     _WIN32_IE=${_WIN32_WINNT_WIN10} NTDDI_VERSION=${NTDDI_WIN10_NI}
     GDIPVER=0x0110 # Enable GDI+ v1.1, which is available since Windows Vista.
+    # Disable DLL imports of system libraries as we'll load their symbols dynamically
+    # at runtime, without these definitions the linker will ask us to give their
+    # import libraries and refuse to link.
+    _KERNEL32_=1 _USER32_=1 _ADVAPI32_=1 _CFGMGR32_=1 _SETUPAPI_=1
+    _WINSTORAGEAPI_=1 STATIC_PATHCCH=1 _ZAWPROXY_=1
 )
 
 target_compile_options(${PROJECT_NAME} PRIVATE
