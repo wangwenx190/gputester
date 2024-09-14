@@ -35,4 +35,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-**Additional important note: most code is based on <https://github.com/LizardByte/Sunshine/blob/master/tools/dxgi.cpp>.**
+## Additional important note
+
+- Most code is based on <https://github.com/LizardByte/Sunshine/blob/master/tools/dxgi.cpp>.
+- [registry.hpp](./registry.hpp) and [registry.cpp](./registry.cpp) are copied from <https://github.com/m4x1m1l14n/Registry>.
