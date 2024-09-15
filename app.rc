@@ -3,8 +3,8 @@
 IDI_ICON1 ICON "app.ico"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     2,0,0,0
-PRODUCTVERSION  2,0,0,0
+FILEVERSION     0,0,0,0
+PRODUCTVERSION  2,0,1,0
 FILEFLAGSMASK   0x3fL
 #ifdef _DEBUG
 FILEFLAGS       VS_FF_DEBUG
@@ -22,11 +22,11 @@ BEGIN
             VALUE "Comments",         "Mostly based on Sunshine's dxgi tool."
             VALUE "CompanyName",      "wangwenx190"
             VALUE "FileDescription",  "GPU Test Tool"
-            VALUE "FileVersion",      "2.0.0.0"
+            VALUE "FileVersion",      "0.0.0.0"
             VALUE "LegalCopyright",   "The MIT license"
             VALUE "OriginalFilename", "gputester.exe"
             VALUE "ProductName",      "GPU Test Tool"
-            VALUE "ProductVersion",   "2.0.0.0"
+            VALUE "ProductVersion",   "2.0.1.0"
         END
     END
     BLOCK "VarFileInfo"

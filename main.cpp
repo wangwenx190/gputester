@@ -772,7 +772,7 @@ struct DriverInfo final {
         if (index != std::wstring::npos) {
             index = driverVersion.find(L'.', index + 1);
             if (index != std::wstring::npos) {
-                driverVersion = driverVersion.substr(index);
+                driverVersion = driverVersion.substr(index + 1);
             }
         }
     }
